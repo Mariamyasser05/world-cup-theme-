@@ -1,5 +1,6 @@
 import random
-
+import os 
+from groq import Groq
 class player :
     def __init__(self,name,position,base_attack,base_defense) :
         self.name=name
@@ -164,11 +165,11 @@ class match :
         self.current_minute=0
         self.timeline=timeline
         self.phase=phase
-        self.home_ai = matchAi(None, self.home_team, 0.5, self, [])#for the ai match
-        self.away_ai = matchAi(None, self.away_team, 0.5, self, [])
+        self.home_ai = matchAi("openai/gpt-oss-120b",self.home_team,0.5,self,[])#for the ai match
+        self.away_ai = matchAi("openai/gpt-oss-120b",self.away_team,0.5,self,[])
 
     def process_discipline(self,team) :
-        if random.random() >= 0.02 : #only a card received in 20%
+        if random.random() >= 0.008 : #only a card received in 2%
             return
         player=random.choice(team.active_lineup) # choosing a random player 
         if random.random() < 0.8 : #80 % will be a yellow card
@@ -327,7 +328,6 @@ class match :
         
 
 
-
 class matchAi :
     def __init__(self,model,controlled_team,risk_tolerance,match,decision_log) :
         self.model=model
@@ -335,6 +335,9 @@ class matchAi :
         self.risk_tolerance=risk_tolerance
         self.match=match
         self.decision_log=decision_log
+        self.client = Groq(
+    api_key=os.environ.get("GROQ_API_KEY")
+)
     
     #observe the state to make the decision 
     def observe_state(self,match) :
@@ -352,53 +355,9 @@ class matchAi :
         return state
     
     #return the action 
-    def decide_action(self, state):
-        actions=[]
-        #substitute if the min stamina is under 50  
-        if min(state["stamina"]) < 65 and state["minute"] >= 60:
-            actions.append("SUBSTITUTE")
-            
- 
-        if self.controlled_team == self.match.home_team:
-            my_score = state["home_score"]
-            opponent_score = state["away_score"]
-        else:
-            my_score = state["away_score"]
-            opponent_score = state["home_score"]
-
-        #if loosing  then the formation must be attacking and we need to higher the risk tolerance 
-        if opponent_score > my_score:
-            if state["minute"] >= 30:
-                if self.controlled_team.formation != "ATTACKING":
-                    actions.append("CHANGE_TO_ATTACKING")
-            if state["minute"] >= 45 and self.risk_tolerance < 0.7:
-                actions.append("PUSH_ATTACK")
-            if state["minute"] >= 60 and self.risk_tolerance < 0.9:
-                actions.append("PUSH_ATTACK")
-            if state["minute"] >= 75 and self.risk_tolerance < 1.0:
-                actions.append("PUSH_ATTACK")
+    def decide_action(self, state): 
     
-        #if winnig then the formation must be defensive and we must lower the risk and hold
-        elif my_score > opponent_score:
-            if state["minute"] >= 60:
-                if self.controlled_team.formation != "DEFENSIVE":
-                    actions.append("CHANGE_TO_DEFENSIVE")
-
-            if state["minute"] >= 75 and self.risk_tolerance > 0.3:
-                    actions.append("HOLD")
-
-            if state["minute"] >= 90 and self.risk_tolerance > 0.1:
-                actions.append("HOLD")
-        #if draw we will change the formation to attackinh and push attack
-        else:
-            if state["minute"] >= 70:
-                if self.controlled_team.formation != "ATTACKING":
-                    actions.append("CHANGE_TO_ATTACKING")
-
-            if state["minute"] >= 85 and self.risk_tolerance < 0.7:
-                actions.append("PUSH_ATTACK") 
-    
-        return actions
+        return self.get_ai_actions(state)
     
     def apply_decision(self, actions):
         if  not actions  :
@@ -435,6 +394,65 @@ class matchAi :
                 self.risk_tolerance = max(0, self.risk_tolerance - 0.2)
                 self.decision_log.append("Reduced risk (Hold)")
 
+
+    def get_ai_actions(self,state) : # i used the ai model openai/gpt-oss-120b 
+        #the prompt gived to the model
+        prompt = f""" 
+        You are the AI manager of {self.controlled_team.name}.
+        Current minute: {state["minute"]}
+        
+        Score:
+        Home: {state["home_score"]}
+        Away: {state["away_score"]}
+        
+        Formation:
+        {self.controlled_team.formation}
+        
+        Risk tolerance:
+        {self.risk_tolerance}
+        
+        Lowest stamina:
+        {min(state["stamina"])}
+        
+        Available actions:
+
+        SUBSTITUTE
+        CHANGE_TO_ATTACKING
+        CHANGE_TO_DEFENSIVE
+        PUSH_ATTACK
+        HOLD
+        
+        Return ONLY action names separated by commas.
+        """
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {
+                    "role":"user",#to act as the user to take the decisions
+                    "content": prompt
+                }
+            ],
+            temperature=0.4 # to not be so random
+        )
+        answer = response.choices[0].message.content.upper()#make it upper case 
+        actions=answer.split(",")
+        actions = []
+        
+        for a in answer.split(","):
+            a = a.strip()# remove the spaces 
+        #only append the actions 
+            if a in [
+                "SUBSTITUTE",
+                "CHANGE_TO_ATTACKING",
+                "CHANGE_TO_DEFENSIVE",
+                "PUSH_ATTACK",
+                "HOLD"
+            ]:
+                actions.append(a)
+        
+        return actions
+
+            
 
 
 
@@ -495,8 +513,6 @@ bench1 = [
     acuna,
     rulli
 ]
-
-
 
 roster1 = lineup1 + bench1
 
